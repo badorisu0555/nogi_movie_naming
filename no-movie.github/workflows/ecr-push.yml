@@ -1,0 +1,105 @@
+name: Build and Push to ECR
+ 
+on:
+  push:
+    branches:
+      - main
+ 
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPOSITORY: ai_news  #ECRリポジトリ名を指定
+ 
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository # ソースコードを取得
+      uses: actions/checkout@v4 
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+
+    - name: Run tests
+      run: pytest
+
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # OIDCトークン取得のため
+      contents: read    # リポジトリのコードを読み取るため
+ 
+    steps:
+      - name: Checkout repository # ソースコードを取得
+        uses: actions/checkout@v4 
+ 
+      - name: Configure AWS credentials # AWS認証情報の設定
+        uses: aws-actions/configure-aws-credentials@v4 
+        with:
+          role-to-assume: arn:aws:iam::992382612474:role/github-actions-ecr-push-example-role
+          aws-region: ap-northeast-1
+
+    # これを使うだけで docker login コマンドが不要になります
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+    # イメージのビルド・タグ付け・プッシュを一括で行う
+    # 1. ECRへプッシュ
+      - name: Build and Push
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          # 次のステップにイメージの場所を伝える
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+# 2. 既存のタスク定義（API用とバッチ用の両方）をAWSから取得
+      - name: Download task definitions
+        run: |
+          # API用のタスク定義を取得
+          aws ecs describe-task-definition --task-definition ${{ env.ECR_REPOSITORY }}-api --query taskDefinition > api-task-def.json
+          # バッチ用のタスク定義を取得
+          aws ecs describe-task-definition --task-definition ${{ env.ECR_REPOSITORY }}-batch --query taskDefinition > batch-task-def.json
+
+      # 3. 両方のファイル内の「イメージ名」を最新のものに書き換える
+      - name: Fill in the new image ID in the API task definition
+        id: render-api-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: api-task-def.json
+          container-name: app
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Fill in the new image ID in the Batch task definition
+        id: render-batch-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: batch-task-def.json
+          container-name: batch-app
+          image: ${{ steps.build-image.outputs.image }}
+
+      # 4. デプロイ（APIはサービス更新、バッチは新しい定義の登録のみ）
+      - name: Deploy API Service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-api-task-def.outputs.task-definition }}
+          service: ${{ env.ECR_REPOSITORY }}-service
+          cluster: ${{ env.ECR_REPOSITORY }}
+          wait-for-service-stability: true
+
+      - name: Register New Batch Task Definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-batch-task-def.outputs.task-definition }}
+          # バッチは「サービス」ではないので、service/clusterを指定せず登録のみ行う
+          # これにより、EventBridgeが参照する「最新(latest)」の定義が更新されます

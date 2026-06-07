@@ -1,0 +1,21 @@
+[
+  "https://openai.com/news/rss.xml",
+  "https://cloudblog.withgoogle.com/rss/",
+  "https://aws.amazon.com/jp/blogs/aws/feed/",
+  "https://developers-jp.googleblog.com/atom.xml",
+  "https://engineering.mercari.com/blog/feed.xml",
+  "https://developers.cyberagent.co.jp/blog/feed/",
+  "https://www.ai-shift.co.jp/techblog/feed",
+  "https://recruit-tech.co.jp/blog/feed/",
+  "https://blog.brainpad.co.jp/rss",
+  "https://zenn.dev/topics/llm/feed",
+  "https://rss.itmedia.co.jp/rss/2.0/aiplus.xml",
+  "https://atmarkit.itmedia.co.jp/rss/rss.xml",
+  "https://medium.com/feed/@kyakuno",
+  "https://rsshub.app/huggingface/daily-papers",
+  "https://research.preferred.jp/feed/",
+  "https://feeds.feedburner.com/blogspot/gJZg",
+  "https://pytorch.org/feed.xml",
+  "https://www.deeplearning.ai/the-batch/rss",
+  "https://www.technologyreview.jp/feed/"
+]

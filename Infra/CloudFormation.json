@@ -1,0 +1,296 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "ECR, ECS(API + Scheduled Task), VPC, and EventBridge",
+  "Parameters": {
+    "ProjectName": {
+      "Type": "String",
+      "Default": "ai_news"
+    },
+    "ScheduleExpression": {
+      "Type": "String",
+      "Default": "cron(0 0 * * ? *)",
+      "Description": "Schedule for the batch task (UTC)"
+    }
+  },
+  "Resources": {
+    "BedrockApiKeyParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": { "Fn::Sub": "/${ProjectName}/Bedrock_API_Key" },
+        "Type": "String",
+        "Value": "placeholder",
+        "Description": "API key for Bedrock"
+      }
+    },
+    "ECRRepository": {
+      "Type": "AWS::ECR::Repository",
+      "Properties": {
+        "RepositoryName": { "Ref": "ProjectName" }
+      }
+    },
+    "EC2VPC": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "192.168.20.0/24",
+        "Tags": [{ "Key": "Name", "Value": { "Fn::Sub": "${ProjectName}-vpc" } }]
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway"
+    },
+    "VPCGatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": { "Ref": "EC2VPC" },
+        "InternetGatewayId": { "Ref": "InternetGateway" }
+      }
+    },
+    "EC2Subnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": { "Ref": "EC2VPC" },
+        "CidrBlock": "192.168.20.0/28",
+        "MapPublicIpOnLaunch": true,
+        "Tags": [{ "Key": "Name", "Value": { "Fn::Sub": "${ProjectName}-public-subnet" } }]
+      }
+    },
+    "EC2RouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": { "Ref": "EC2VPC" },
+        "Tags": [{ "Key": "Name", "Value": { "Fn::Sub": "${ProjectName}-public-rt" } }]
+      }
+    },
+    "PublicRoute": {
+      "Type": "AWS::EC2::Route",
+      "DependsOn": "VPCGatewayAttachment",
+      "Properties": {
+        "RouteTableId": { "Ref": "EC2RouteTable" },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": { "Ref": "InternetGateway" }
+      }
+    },
+    "SubnetRouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": { "Ref": "EC2Subnet" },
+        "RouteTableId": { "Ref": "EC2RouteTable" }
+      }
+    },
+    "EC2SecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Allow HTTP",
+        "VpcId": { "Ref": "EC2VPC" },
+        "SecurityGroupIngress": [
+          { "IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "CidrIp": "0.0.0.0/0" }
+        ]
+      }
+    },
+    "IAMRoleEcsExecution": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+        ],
+        "Policies": [{
+          "PolicyName": "GetParameterPolicy",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{ 
+              "Effect": "Allow", 
+              "Action": ["ssm:GetParameters", "ssm:GetParameter"], 
+              "Resource": [
+                { "Fn::Sub": "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/*" }
+              ] 
+            }]
+          }
+        },
+        {
+            "PolicyName": "CloudWatchLogsWritePolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Action": [
+                  "logs:CreateLogStream",
+                  "logs:PutLogEvents",
+                  "logs:DescribeLogStreams"
+                ],
+                "Resource": [
+                  { "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${ProjectName}*:*" }
+                ]
+              }]
+            }
+         }     
+      ]
+      }
+    },
+    "IAMRoleEcsTask": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }]
+        },
+        "Policies": [{
+          "PolicyName": "DynamoDBReadWritePolicy",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:PutItem",
+                "dynamodb:GetItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:Query",
+                "dynamodb:Scan",
+                "dynamodb:BatchWriteItem"
+              ],
+              "Resource": [
+                { "Fn::Sub": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*" }
+              ]
+            }]
+          }
+        }]
+      }
+    },
+    "ECSCluster": {
+      "Type": "AWS::ECS::Cluster",
+      "Properties": {
+        "ClusterName": { "Ref": "ProjectName" }
+      }
+    },
+    "ApiTaskDefinition": {
+      "Type": "AWS::ECS::TaskDefinition",
+      "Properties": {
+        "Family": { "Fn::Sub": "${ProjectName}-api" },
+        "Cpu": "256",
+        "Memory": "512",
+        "NetworkMode": "awsvpc",
+        "RequiresCompatibilities": ["FARGATE"],
+        "ExecutionRoleArn": { "Fn::GetAtt": ["IAMRoleEcsExecution", "Arn"] },
+        "TaskRoleArn": { "Fn::GetAtt": ["IAMRoleEcsTask", "Arn"] },
+        "ContainerDefinitions": [{
+          "Name": "app",
+          "Image": { "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectName}:latest" },
+          "PortMappings": [{ "ContainerPort": 80 }],
+          "LogConfiguration": {
+            "LogDriver": "awslogs",
+            "Options": {
+              "awslogs-group": { "Fn::Sub": "/ecs/${ProjectName}-api" },
+              "awslogs-region": { "Ref": "AWS::Region" },
+              "awslogs-stream-prefix": "ecs",
+              "awslogs-create-group": "true"
+            }
+          },  
+          "Secrets": [
+            { "Name": "Bedrock_API_Key", "ValueFrom": { "Fn::Sub": "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/Bedrock_API_Key" } }
+          ]
+        }]
+      }
+    },
+    "ScheduledTaskDefinition": {
+      "Type": "AWS::ECS::TaskDefinition",
+      "Properties": {
+        "Family": { "Fn::Sub": "${ProjectName}-batch" },
+        "Cpu": "256", 
+        "Memory": "512",
+        "NetworkMode": "awsvpc",
+        "RequiresCompatibilities": ["FARGATE"],
+        "ExecutionRoleArn": { "Fn::GetAtt": ["IAMRoleEcsExecution", "Arn"] },
+        "TaskRoleArn": { "Fn::GetAtt": ["IAMRoleEcsTask", "Arn"] },
+        "ContainerDefinitions": [{
+          "Name": "batch-app",
+          "Image": { "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectName}:latest" },
+          "Command": ["python", "app/batch/main.py"],
+          "LogConfiguration": {
+            "LogDriver": "awslogs",
+            "Options": {
+              "awslogs-group": { "Fn::Sub": "/ecs/${ProjectName}-batch" },
+              "awslogs-region": { "Ref": "AWS::Region" },
+              "awslogs-stream-prefix": "ecs",
+              "awslogs-create-group": "true"
+            }
+          }
+        }]
+      }
+    },
+    "ECSService": {
+      "Type": "AWS::ECS::Service",
+      "Properties": {
+        "ServiceName": { "Fn::Sub": "${ProjectName}-service" }, 
+        "Cluster": { "Ref": "ECSCluster" },
+        "TaskDefinition": { "Ref": "ApiTaskDefinition" },
+        "LaunchType": "FARGATE",
+        "DesiredCount": 1,
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "AssignPublicIp": "ENABLED",
+            "Subnets": [{ "Ref": "EC2Subnet" }],
+            "SecurityGroups": [{ "Ref": "EC2SecurityGroup" }]
+          }
+        }
+      }
+    },
+    "EventsInvokeEcsRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{ "Effect": "Allow", "Principal": { "Service": "events.amazonaws.com" }, "Action": "sts:AssumeRole" }]
+        },
+        "Policies": [{
+          "PolicyName": "InvokeEcsTask",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              { 
+                "Effect": "Allow", 
+                "Action": "ecs:RunTask", 
+                "Resource": { "Ref": "ScheduledTaskDefinition" } 
+              },
+              { 
+                "Effect": "Allow", 
+                "Action": "iam:PassRole", 
+                "Resource": [
+                  { "Fn::GetAtt": ["IAMRoleEcsExecution", "Arn"] },
+                  { "Fn::GetAtt": ["IAMRoleEcsTask", "Arn"] } 
+                ] 
+              }
+            ]
+          }
+        }]
+      }
+    },
+    "ScheduledTaskRule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Trigger periodic batch task",
+        "ScheduleExpression": { "Ref": "ScheduleExpression" },
+        "State": "ENABLED",
+        "Targets": [{
+          "Id": "ScheduledTask",
+          "Arn": { "Fn::GetAtt": ["ECSCluster", "Arn"] },
+          "RoleArn": { "Fn::GetAtt": ["EventsInvokeEcsRole", "Arn"] },
+          "EcsParameters": {
+            "TaskDefinitionArn": { "Ref": "ScheduledTaskDefinition" },
+            "LaunchType": "FARGATE",
+            "NetworkConfiguration": {
+              "AwsVpcConfiguration": {
+                "Subnets": [{ "Ref": "EC2Subnet" }],
+                "SecurityGroups": [{ "Ref": "EC2SecurityGroup" }],
+                "AssignPublicIp": "ENABLED"
+              }
+            }
+          }
+        }]
+      }
+    }
+  }
+}

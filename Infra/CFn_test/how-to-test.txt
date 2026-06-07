@@ -1,0 +1,15 @@
+ステップ1：AWS SSMの値を書き換える
+CloudFormationで作られた初期値は placeholder なので、テスト用に値を更新します。
+AWSコンソールで Systems Manager > パラメータストア を開く。
+/${ProjectName}/Bedrock_API_Key を選択し、「編集」をクリック。
+値を TEST-KEY-123456789 などに変更して保存。
+
+ステップ2：Dockerイメージの構築と、ECRへのプッシュ
+# 1. ECRへのログイン（東京リージョン）
+aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 992382612474.dkr.ecr.ap-northeast-1.amazonaws.com
+# 2. イメージのビルド
+docker build -t test-project .
+# 3. イメージへのタグ付け
+docker tag test-project:latest 992382612474.dkr.ecr.ap-northeast-1.amazonaws.com/test-project:latest
+# 4. ECRへプッシュ
+docker push 992382612474.dkr.ecr.ap-northeast-1.amazonaws.com/test-project:latest

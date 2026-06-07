@@ -1,0 +1,14 @@
+# 開発環境・設定ファイル
+.gitignore
+docker-compose.yml
+Dockerfile
+__pycache__/
+venv/
+
+client.py
+sample_app.py
+
+template/
+no-use/
+
+.env
