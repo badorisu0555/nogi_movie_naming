@@ -30,3 +30,5 @@ insightface
 
 instaloader
 yt-dlp
+
+scikit-learn
